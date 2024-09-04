@@ -35,8 +35,8 @@
 typedef char VARNAME[40];
 typedef char FILNAME[80];
 
-#define MAX_OUT_FILES 100
-#define MAX_IN_FILES  100
+#define MAX_OUT_FILES 1000
+#define MAX_IN_FILES  1000
 
 #define bufsize 2048
 
