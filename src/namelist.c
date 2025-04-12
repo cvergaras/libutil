@@ -130,52 +130,102 @@ static char *readline(FILE *inf, char *buf)
 {
     char *ln = NULL, *s, term;
     int size = BUFCHUNK;
+    int pos = 0;
+    int c;
+    char *dynamic_buf = NULL;
 
-    if ( feof(inf) ) {
+    if (feof(inf)) {
         fprintf(stderr, "Early end of file\n");
         return NULL;
     }
 
-    ln = buf;
+    // Start with the static buffer
+    dynamic_buf = malloc(size);
+    if (!dynamic_buf) {
+        fprintf(stderr, "Out of memory\n");
+        exit(1);
+    }
+    dynamic_buf[0] = 0;
 
-    do  {
-        ln = buf;
-        ln[0] = 0;
-        if ( feof(inf) || fgets(ln, size, inf) == NULL) return NULL;
-
-        // strip off any LF or CR characters
-        while ( ln[0] != 0 && (ln[strlen(ln)-1] == '\n' || ln[strlen(ln)-1] == '\r' ) )
-            ln[strlen(ln)-1] = 0;
-
-        if ( !strlen(ln) && feof(inf) ) {
-            return NULL;
-        }
-
-        if ( ln[0] == 0 ) continue; // skip empty lines
-
-        s = ln;
-        while (*s) {
-            if (*s == '"' || *s == '\'' ) {
-                term = *s++;
-                while (*s && *s != term) s++;
-                if (*s != term) { fprintf(stderr, "Unterminated string\n"); exit(1); }
+    while ((c = fgetc(inf)) != EOF) {
+        if (pos >= size - 1) {
+            // Double the buffer size
+            size *= 2;
+            char *new_buf = realloc(dynamic_buf, size);
+            if (!new_buf) {
+                free(dynamic_buf);
+                fprintf(stderr, "Out of memory\n");
+                exit(1);
             }
+            dynamic_buf = new_buf;
+        }
+        
+        if (c == '\n' || c == '\r') {
+            dynamic_buf[pos] = '\0';
+            break;
+        }
+        
+        dynamic_buf[pos++] = c;
+    }
+
+    if (pos == 0 && c == EOF) {
+        free(dynamic_buf);
+        return NULL;
+    }
+
+    // Process the line
+    s = dynamic_buf;
+    while (*s) {
+        if (*s == '"' || *s == '\'') {
+            term = *s;
+            s++;
+            while (*s && *s != term) {
+                if (*s == '\\') {
+                    s++; // Skip the backslash
+                    if (*s) s++; // Skip the escaped character
+                } else {
+                    s++;
+                }
+            }
+            if (*s != term) {
+                fprintf(stderr, "Unterminated string starting with %c\n", term);
+                free(dynamic_buf);
+                exit(1);
+            }
+            s++;
+        } else {
             if (*s == '\\') s++;
             else if (*s == '!' || *s == '#') *s = 0;
             else s++;
         }
-
-        s = ln;
-        while (*s && ( *s == ' ' || *s == '\t' ) ) s++;
-        if ( s != ln ) memmove(ln, s, strlen(s)+1);
-
-        s = &ln[strlen(ln)-1];
-        while (s >= ln && ( *s == ' ' || *s == '\t' ) ) *s-- = 0;
     }
-    while (ln[0] == 0);
+
+    // Trim whitespace
+    s = dynamic_buf;
+    while (*s && (*s == ' ' || *s == '\t')) s++;
+    if (s != dynamic_buf) {
+        memmove(dynamic_buf, s, strlen(s) + 1);
+    }
+
+    s = &dynamic_buf[strlen(dynamic_buf) - 1];
+    while (s >= dynamic_buf && (*s == ' ' || *s == '\t')) *s-- = 0;
+
+    if (dynamic_buf[0] == 0) {
+        free(dynamic_buf);
+        return readline(inf, buf); // Skip empty lines
+    }
+
+    // Copy to static buffer if it fits
+    if (strlen(dynamic_buf) < BUFCHUNK) {
+        strcpy(buf, dynamic_buf);
+        free(dynamic_buf);
+        ln = buf;
+    } else {
+        ln = dynamic_buf;
+    }
 
     lineno++;
-    return buf;
+    return ln;
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
