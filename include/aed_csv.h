@@ -29,6 +29,7 @@
 #define _AED_CSV_H_
 
 #include "libutil.h"
+#include <stddef.h>
 
 #define MAX_OUT_VALUES   40
 
@@ -37,6 +38,7 @@ typedef char FILNAME[80];
 
 #define MAX_OUT_FILES 20000
 #define MAX_IN_FILES  20000
+#define MAX_MEM_CSV   20000
 
 #define bufsize 2048
 
@@ -94,6 +96,8 @@ typedef char FILNAME[80];
   int find_csv_var_(int *csv, const char *name, int *len);
 
   int open_csv_input(const char *fname, const char *timefmt);
+  void register_memory_csv(const char *name, char *buffer, size_t size);
+  void clear_memory_csvs(void);
   int count_lines(const char *fname);
   int find_csv_var(int csv, const char *name);
 

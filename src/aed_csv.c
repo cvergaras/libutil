@@ -25,6 +25,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.     *
  *                                                                            *
  ******************************************************************************/
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -63,6 +64,16 @@ typedef struct _AED_CSV_IN {
 static int _n_inf = -1;
 static AED_CSV_IN csv_if[MAX_IN_FILES];
 
+/* Memory-backed CSV registry for Python/coupling (register before run) */
+typedef struct _MEM_CSV_T {
+    const char *name;
+    char *buffer;
+    size_t size;
+} MEM_CSV_T;
+
+static MEM_CSV_T mem_csv[MAX_MEM_CSV];
+static int n_mem_csv = 0;
+static int _mem_csv_logged = 0;
 
 static const AED_REAL missing = MISVAL;
 static const AED_REAL zero = 0.;
@@ -163,6 +174,30 @@ static int check_it(int csv, int idx)
 
 
 /******************************************************************************
+ * Register a CSV buffer for a specific filename (used by Python pglm).
+ ******************************************************************************/
+void register_memory_csv(const char *name, char *buffer, size_t size)
+{
+    if (n_mem_csv >= MAX_MEM_CSV) {
+        fprintf(stderr, "Too many memory CSV files\n");
+        return;
+    }
+    mem_csv[n_mem_csv].name = name;
+    mem_csv[n_mem_csv].buffer = buffer;
+    mem_csv[n_mem_csv].size = size;
+    n_mem_csv++;
+}
+
+/******************************************************************************
+ * Clear all registered memory CSVs (call before re-registering each step).
+ ******************************************************************************/
+void clear_memory_csvs(void)
+{
+    n_mem_csv = 0;
+    _mem_csv_logged = 0;
+}
+
+/******************************************************************************
  *                                                                            *
  *                                                                            *
  ******************************************************************************/
@@ -187,7 +222,25 @@ int open_csv_input(const char *fname, const char *timefmt)
         return -1;
     }
 
-    if ( (f = fopen(fname, "r")) == NULL ) {
+    /* Check if a memory buffer exists for this filename (exact or basename match) */
+    for (i = 0; i < n_mem_csv; i++) {
+        const char *base = strrchr(fname, '/');
+        base = base ? base + 1 : fname;
+        if (strcmp(fname, mem_csv[i].name) == 0 || strcmp(base, mem_csv[i].name) == 0) {
+            f = fmemopen(mem_csv[i].buffer, mem_csv[i].size, "r");
+            if (f == NULL) {
+                return -1;
+            }
+            if (!_mem_csv_logged) {
+                fprintf(stderr, "[aed_csv] Using memory buffers for inflow/outflow CSVs (not disk)\n");
+                _mem_csv_logged = 1;
+            }
+            break;
+        }
+    }
+
+    /* Fallback to reading a real file */
+    if (f == NULL && (f = fopen(fname, "r")) == NULL) {
         fprintf(stderr, "Cannot find file \"%s\"\n", fname);
         return -1;
     }
