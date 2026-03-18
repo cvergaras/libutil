@@ -1,0 +1,206 @@
+diff --git a/Makefile b/Makefile
+index 8be1077..6ae87d2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -7,7 +7,7 @@
+ #      School of Agriculture and Environment                                  #
+ #      The University of Western Australia                                    #
+ #                                                                             #
+-#  Copyright 2013 - 2025 -  The University of Western Australia               #
++#  Copyright 2013 - 2024 -  The University of Western Australia               #
+ #                                                                             #
+ #   libutil is free software: you can redistribute it and/or modify           #
+ #   it under the terms of the GNU General Public License as published by      #
+@@ -48,8 +48,6 @@ CFLAGS=-Wall -O3
+ INCLUDES=-I${incdir}
+ ifeq ($(F90),ifort)
+   FFLAGS=-warn all -module ${moddir} -static-intel -mp1 -stand f03
+-else ifeq ($(F90),ifx)
+-  FFLAGS=-warn all -module ${moddir} -static-intel -mp1 -stand f03
+ else ifeq ($(F90),pgfortran)
+   FFLAGS=-module ${moddir} -O3
+ else
+diff --git a/include/aed_csv.h b/include/aed_csv.h
+old mode 100644
+new mode 100755
+index e889e19..20c8770
+--- a/include/aed_csv.h
++++ b/include/aed_csv.h
+@@ -35,8 +35,8 @@
+ typedef char VARNAME[40];
+ typedef char FILNAME[80];
+ 
+-#define MAX_OUT_FILES 100
+-#define MAX_IN_FILES  100
++#define MAX_OUT_FILES 20000
++#define MAX_IN_FILES  20000
+ 
+ #define bufsize 2048
+ 
+diff --git a/src/namelist.c b/src/namelist.c
+index 8616cc5..145023c 100644
+--- a/src/namelist.c
++++ b/src/namelist.c
+@@ -130,52 +130,102 @@ static char *readline(FILE *inf, char *buf)
+ {
+     char *ln = NULL, *s, term;
+     int size = BUFCHUNK;
++    int pos = 0;
++    int c;
++    char *dynamic_buf = NULL;
+ 
+-    if ( feof(inf) ) {
++    if (feof(inf)) {
+         fprintf(stderr, "Early end of file\n");
+         return NULL;
+     }
+ 
+-    ln = buf;
+-
+-    do  {
+-        ln = buf;
+-        ln[0] = 0;
+-        if ( feof(inf) || fgets(ln, size, inf) == NULL) return NULL;
+-
+-        // strip off any LF or CR characters
+-        while ( ln[0] != 0 && (ln[strlen(ln)-1] == '\n' || ln[strlen(ln)-1] == '\r' ) )
+-            ln[strlen(ln)-1] = 0;
+-
+-        if ( !strlen(ln) && feof(inf) ) {
+-            return NULL;
++    // Start with the static buffer
++    dynamic_buf = malloc(size);
++    if (!dynamic_buf) {
++        fprintf(stderr, "Out of memory\n");
++        exit(1);
++    }
++    dynamic_buf[0] = 0;
++
++    while ((c = fgetc(inf)) != EOF) {
++        if (pos >= size - 1) {
++            // Double the buffer size
++            size *= 2;
++            char *new_buf = realloc(dynamic_buf, size);
++            if (!new_buf) {
++                free(dynamic_buf);
++                fprintf(stderr, "Out of memory\n");
++                exit(1);
++            }
++            dynamic_buf = new_buf;
++        }
++        
++        if (c == '\n' || c == '\r') {
++            dynamic_buf[pos] = '\0';
++            break;
+         }
++        
++        dynamic_buf[pos++] = c;
++    }
+ 
+-        if ( ln[0] == 0 ) continue; // skip empty lines
++    if (pos == 0 && c == EOF) {
++        free(dynamic_buf);
++        return NULL;
++    }
+ 
+-        s = ln;
+-        while (*s) {
+-            if (*s == '"' || *s == '\'' ) {
+-                term = *s++;
+-                while (*s && *s != term) s++;
+-                if (*s != term) { fprintf(stderr, "Unterminated string\n"); exit(1); }
++    // Process the line
++    s = dynamic_buf;
++    while (*s) {
++        if (*s == '"' || *s == '\'') {
++            term = *s;
++            s++;
++            while (*s && *s != term) {
++                if (*s == '\\') {
++                    s++; // Skip the backslash
++                    if (*s) s++; // Skip the escaped character
++                } else {
++                    s++;
++                }
++            }
++            if (*s != term) {
++                fprintf(stderr, "Unterminated string starting with %c\n", term);
++                free(dynamic_buf);
++                exit(1);
+             }
++            s++;
++        } else {
+             if (*s == '\\') s++;
+             else if (*s == '!' || *s == '#') *s = 0;
+             else s++;
+         }
++    }
+ 
+-        s = ln;
+-        while (*s && ( *s == ' ' || *s == '\t' ) ) s++;
+-        if ( s != ln ) memmove(ln, s, strlen(s)+1);
++    // Trim whitespace
++    s = dynamic_buf;
++    while (*s && (*s == ' ' || *s == '\t')) s++;
++    if (s != dynamic_buf) {
++        memmove(dynamic_buf, s, strlen(s) + 1);
++    }
++
++    s = &dynamic_buf[strlen(dynamic_buf) - 1];
++    while (s >= dynamic_buf && (*s == ' ' || *s == '\t')) *s-- = 0;
+ 
+-        s = &ln[strlen(ln)-1];
+-        while (s >= ln && ( *s == ' ' || *s == '\t' ) ) *s-- = 0;
++    if (dynamic_buf[0] == 0) {
++        free(dynamic_buf);
++        return readline(inf, buf); // Skip empty lines
++    }
++
++    // Copy to static buffer if it fits
++    if (strlen(dynamic_buf) < BUFCHUNK) {
++        strcpy(buf, dynamic_buf);
++        free(dynamic_buf);
++        ln = buf;
++    } else {
++        ln = dynamic_buf;
+     }
+-    while (ln[0] == 0);
+ 
+     lineno++;
+-    return buf;
++    return ln;
+ }
+ /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+ 
+diff --git a/win/libutil.vcxproj b/win/libutil.vcxproj
+index e0c72bc..c6bb06f 100644
+--- a/win/libutil.vcxproj
++++ b/win/libutil.vcxproj
+@@ -43,7 +43,7 @@
+   <!-- Latest Target Version property -->
+   <PropertyGroup Condition="'$(WindowsTargetPlatformVersion)'==''">
+     <LatestTargetPlatformVersion>$([Microsoft.Build.Utilities.ToolLocationHelper]::GetLatestSDKTargetPlatformVersion('Windows', '10.0'))</LatestTargetPlatformVersion>
+-    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">10.0</WindowsTargetPlatformVersion>
++    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+     <TargetPlatformVersion>$(WindowsTargetPlatformVersion)</TargetPlatformVersion>
+   </PropertyGroup>
+   <!-- Latest Target Version property -->
+@@ -64,18 +64,6 @@
+     <WholeProgramOptimization>true</WholeProgramOptimization>
+     <InterproceduralOptimization>true</InterproceduralOptimization>
+   </PropertyGroup>
+-  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+-    <PlatformToolset>v142</PlatformToolset>
+-  </PropertyGroup>
+-  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+-    <PlatformToolset>v142</PlatformToolset>
+-  </PropertyGroup>
+-  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+-    <PlatformToolset>v142</PlatformToolset>
+-  </PropertyGroup>
+-  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+-    <PlatformToolset>v142</PlatformToolset>
+-  </PropertyGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+   <ImportGroup Label="PropertySheets">
+     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />

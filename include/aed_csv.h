@@ -29,6 +29,7 @@
 #define _AED_CSV_H_
 
 #include "libutil.h"
+#include <stddef.h>
 
 #define MAX_OUT_VALUES   40
 
@@ -37,8 +38,9 @@ typedef char FILNAME[80];
 
 #define MAX_OUT_FILES 20000
 #define MAX_IN_FILES  20000
+#define MAX_MEM_CSV   20000
 
-#define bufsize 2048
+#define bufsize 16384
 
 #ifdef _FORTRAN_SOURCE_
 
@@ -90,10 +92,12 @@ typedef char FILNAME[80];
 
 /*############################################################################*/
 
-  int open_csv_input_(const char *fname, int *len, const char *timefmt, int *l2);
+  int _(const char *fname, int *len, const char *timefmt, int *l2);
   int find_csv_var_(int *csv, const char *name, int *len);
 
   int open_csv_input(const char *fname, const char *timefmt);
+  void register_memory_csv(const char *name, char *buffer, size_t size);
+  void clear_memory_csvs(void);
   int count_lines(const char *fname);
   int find_csv_var(int csv, const char *name);
 
@@ -105,6 +109,7 @@ typedef char FILNAME[80];
   const char *get_csv_colname(int csv, int idx);
 
   int close_csv_input(int csvf);
+  void close_all_csv_inputs(void);
 
   int open_csv_output(const char *out_dir, const char *fname);
   int close_csv_output(int outf);

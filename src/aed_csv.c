@@ -25,53 +25,85 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.     *
  *                                                                            *
  ******************************************************************************/
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <stdlib.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 
-#include "libutil.h"
-#include "aed_csv.h"
-#include "aed_time.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <stdlib.h>
+ #ifndef _WIN32
+ #include <unistd.h>
+ #endif
+ #ifdef _WIN32
+ #define _USE_MATH_DEFINES
+ #endif
+ #include <math.h>
+ #include <errno.h>
 
-
-/*----------------------------------------------------------------------------*/
-
-typedef struct _AED_CSV_OUT {
-    FILE    *f;
-    char     time[20];
-    int      n_cols;
-    char   **header;
-    AED_REAL buff[MAX_OUT_VALUES+4];
-} AED_CSV_OUT;
-
-static int _n_outf = 0;
-static AED_CSV_OUT csv_of[MAX_OUT_FILES];
-
-typedef struct _AED_CSV_IN {
-    FILE  *f;
-    int    n_cols;
-    char **header;
-    AED_REAL *curLine;
-    timefmt  *tf;
+ #include "libutil.h"
+ #include "aed_csv.h"
+ #include "aed_time.h"
+ 
+ 
+ /*----------------------------------------------------------------------------*/
+ 
+ typedef struct _AED_CSV_OUT {
+     FILE    *f;
+     char     time[20];
+     int      n_cols;
+     char   **header;
+     AED_REAL buff[MAX_OUT_VALUES+4];
+ } AED_CSV_OUT;
+ 
+ static int _n_outf = 0;
+ static AED_CSV_OUT csv_of[MAX_OUT_FILES];
+ 
+ typedef struct _AED_CSV_IN {
+     FILE  *f;
+     int    n_cols;
+     char **header;
+     AED_REAL *curLine;
+     timefmt  *tf;
 } AED_CSV_IN;
 
-static int _n_inf = -1;
-static AED_CSV_IN csv_if[MAX_IN_FILES];
+ static int _n_inf = -1;
+ static AED_CSV_IN csv_if[MAX_IN_FILES];
 
 
-static const AED_REAL missing = MISVAL;
-static const AED_REAL zero = 0.;
-// VS C compiler doesnt like the first for, but is OK with t'other
-//static const AED_REAL NaN = missing / zero;
-static const AED_REAL NaN = MISVAL / 0.;
-
-#define BUFCHUNK    10240
-
+ static const AED_REAL missing = MISVAL;
+ /* Portable NaN: use C99 NAN when available, else MISVAL as sentinel for invalid/missing numeric values */
+ #ifdef NAN
+ static const AED_REAL NaN = (AED_REAL)NAN;
+ #else
+ static const AED_REAL NaN = MISVAL;
+ #endif
+ 
+ /* CSV file structure already in GLM */
+ typedef struct _CSV_FILE_R {
+     FILE *f;
+     char **header;
+     int n_cols;
+     AED_REAL *curLine;
+     void *tf;
+ } CSV_FILE_R;
+ 
+//  extern CSV_FILE_R csv_if[MAX_IN_FILES];
+//  extern int _n_inf;
+ 
+ /* Memory-backed CSV registry */
+ typedef struct _MEM_CSV_T {
+     const char *name;
+     char *buffer;
+     size_t size;
+ } MEM_CSV_T;
+ 
+ static MEM_CSV_T mem_csv[MAX_MEM_CSV];
+ static int n_mem_csv = 0;
+ static int _mem_csv_logged = 0;
+ 
+ #define BUFCHUNK    10240
+ 
+ 
 
 /*============================================================================*/
 
@@ -166,10 +198,131 @@ static int check_it(int csv, int idx)
  *                                                                            *
  *                                                                            *
  ******************************************************************************/
+/* Register a CSV buffer for a specific filename */
+void register_memory_csv(const char *name, char *buffer, size_t size) {
+    if (n_mem_csv >= MAX_MEM_CSV) {
+        fprintf(stderr, "Too many memory CSV files\n");
+        return;
+    }
+    mem_csv[n_mem_csv].name = name;
+    mem_csv[n_mem_csv].buffer = buffer;
+    mem_csv[n_mem_csv].size = size;
+    n_mem_csv++;
+}
+
+/* Clear all registered memory CSVs (call before re-registering each coupling step) */
+void clear_memory_csvs(void) {
+    n_mem_csv = 0;
+    _mem_csv_logged = 0;
+}
+
 int open_csv_input(const char *fname, const char *timefmt)
 {
     FILE *f = NULL;
     int cols, i;
+
+    /* Initialize CSV structures if first call */
+    if (_n_inf < 0) {
+        for (i = 0; i < MAX_IN_FILES; i++) {
+            csv_if[i].f = NULL;
+            csv_if[i].n_cols = 0;
+            csv_if[i].header = NULL;
+            csv_if[i].curLine = NULL;
+            csv_if[i].tf = NULL;
+        }
+        _n_inf = 0;
+    }
+
+    if (_n_inf >= MAX_IN_FILES) {
+        fprintf(stderr, "Too many csv_files open\n");
+        return -1;
+    }
+
+    /* Check if a memory buffer exists for this filename (exact or basename match) */
+    for (i = 0; i < n_mem_csv; i++) {
+        const char *base = strrchr(fname, '/');
+        base = base ? base + 1 : fname;
+        if (strcmp(fname, mem_csv[i].name) == 0 || strcmp(base, mem_csv[i].name) == 0) {
+            f = fmemopen(mem_csv[i].buffer, mem_csv[i].size, "r");
+            if (f == NULL) {
+                return -1;
+            }
+            if (!_mem_csv_logged) { fprintf(stderr, "[aed_csv] Using memory buffers for inflow/outflow CSVs (not disk)\n"); _mem_csv_logged = 1; }
+            break;
+        }
+    }
+
+    /* Fallback to reading a real file */
+    if (f == NULL) {
+        const char *path_to_open = fname;
+        char *newpath = NULL;
+        {
+            const char *csv_dir = getenv("GLM_CSV_DIR");
+            fprintf(stderr, "[aed_csv] open_csv_input fname=\"%s\" GLM_CSV_DIR=%s\n",
+                    fname, csv_dir ? csv_dir : "(unset)");
+            if (csv_dir != NULL && csv_dir[0] != '\0') {
+                const char *base = strrchr(fname, '/');
+                base = base ? base + 1 : fname;
+                size_t dlen = strlen(csv_dir);
+                size_t blen = strlen(base);
+                newpath = (char *)malloc(dlen + 2 + blen);
+                if (newpath != NULL) {
+                    sprintf(newpath, "%s/%s", csv_dir, base);
+                    path_to_open = newpath;
+                    fprintf(stderr, "[aed_csv] trying shm path base=\"%s\" path_to_open=\"%s\"\n",
+                            base, path_to_open);
+                } else {
+                    fprintf(stderr, "[aed_csv] malloc failed for shm path\n");
+                }
+            }
+        }
+        f = fopen(path_to_open, "r");
+        if (f == NULL && path_to_open != fname) {
+            fprintf(stderr, "[aed_csv] fopen failed for \"%s\" (errno %d)\n", path_to_open, errno);
+        }
+        if (f != NULL && path_to_open != fname) {
+            fprintf(stderr, "[aed_csv] opened from shm: \"%s\"\n", path_to_open);
+        }
+        if (newpath != NULL)
+            free(newpath);
+        if (f == NULL) {
+            fprintf(stderr, "Cannot find file \"%s\"\n", fname);
+            return -1;
+        }
+    }
+
+    csv_if[_n_inf].f = f;
+
+    /* Read header and get number of columns */
+    csv_if[_n_inf].header = break_line(read_line(f), &cols);
+    csv_if[_n_inf].n_cols = cols;
+
+    /* Allocate current line storage */
+    csv_if[_n_inf].curLine = malloc(sizeof(AED_REAL) * cols);
+    if (csv_if[_n_inf].curLine == NULL) {
+        fprintf(stderr, "Memory allocation error\n");
+        fclose(f);
+        return -1;
+    }
+
+    /* Decode time format if provided */
+    if (timefmt != NULL)
+        csv_if[_n_inf].tf = decode_time_format(timefmt);
+    else
+        csv_if[_n_inf].tf = NULL;
+
+    /* Load the first line of data */
+    load_csv_line(_n_inf);
+
+    return _n_inf++;
+}
+
+int open_csv_input2(const char *fname, const char *timefmt)
+{
+    FILE *f = NULL;
+    int cols, i;
+
+    // printf("Opening csv input file: %s\n", fname);
 
     if ( _n_inf < 0 ) {
         for (i = 0; i < MAX_IN_FILES; i++) {
@@ -187,6 +340,7 @@ int open_csv_input(const char *fname, const char *timefmt)
         return -1;
     }
 
+    /* open_csv_input2: met, evap, groundwater, etc - always read from workspace (no GLM_CSV_DIR) */
     if ( (f = fopen(fname, "r")) == NULL ) {
         fprintf(stderr, "Cannot find file \"%s\"\n", fname);
         return -1;
@@ -236,6 +390,27 @@ int close_csv_input(int csvf)
     if ( csvf == _n_inf-1 ) _n_inf--;
 
     return 0;
+}
+
+void close_all_csv_inputs(void)
+{
+    int i, j;
+    for (i = 0; i < _n_inf; i++) {
+        if (csv_if[i].f != NULL) fclose(csv_if[i].f);
+        csv_if[i].f = NULL;
+        if (csv_if[i].header != NULL) {
+            for (j = 0; j < csv_if[i].n_cols; j++)
+                free(csv_if[i].header[j]);
+            free(csv_if[i].header);
+        }
+        csv_if[i].header = NULL;
+        csv_if[i].n_cols = 0;
+        if (csv_if[i].curLine != NULL) free(csv_if[i].curLine);
+        csv_if[i].curLine = NULL;
+        csv_if[i].tf = NULL;
+    }
+    _n_inf = 0;
+    if (_ln != NULL) { free(_ln); _ln = NULL; }
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 

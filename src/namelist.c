@@ -72,7 +72,7 @@ typedef struct _nml {
     NML_Section *section;
 } NML;
 
-#define BUFCHUNK      10240
+#define BUFCHUNK      1024000
 
 /******************************************************************************/
 static int  list_count = 0;
