@@ -40,7 +40,7 @@ typedef char FILNAME[80];
 #define MAX_IN_FILES  20000
 #define MAX_MEM_CSV   20000
 
-#define bufsize 2048
+#define bufsize 262144  // Updated to 1MB for large groundwater inflow arrays
 
 #ifdef _FORTRAN_SOURCE_
 
@@ -109,6 +109,7 @@ typedef char FILNAME[80];
   const char *get_csv_colname(int csv, int idx);
 
   int close_csv_input(int csvf);
+  void close_all_csv_inputs(void);
 
   int open_csv_output(const char *out_dir, const char *fname);
   int close_csv_output(int outf);

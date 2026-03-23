@@ -81,7 +81,7 @@ static const AED_REAL zero = 0.;
 //static const AED_REAL NaN = missing / zero;
 static const AED_REAL NaN = MISVAL / 0.;
 
-#define BUFCHUNK    10240
+#define BUFCHUNK    262144
 
 
 /*============================================================================*/
@@ -289,6 +289,17 @@ int close_csv_input(int csvf)
     if ( csvf == _n_inf-1 ) _n_inf--;
 
     return 0;
+}
+/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+
+
+/******************************************************************************
+ * Close all CSV inputs and reset count. Call at end of each GLM run when
+ * used as a library (e.g. Python coupling) to avoid "Too many csv_files open".
+ ******************************************************************************/
+void close_all_csv_inputs(void)
+{
+    _n_inf = 0;
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
