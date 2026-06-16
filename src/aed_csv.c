@@ -75,6 +75,52 @@ static MEM_CSV_T mem_csv[MAX_MEM_CSV];
 static int n_mem_csv = 0;
 static int _mem_csv_logged = 0;
 
+/* Open-addressing hash index over mem_csv[] for O(1) name lookup. Without it,
+ * open_csv_input() does a linear scan of the whole registry per file open, which
+ * is O(n^2) per coupling step when thousands of inflow/outflow CSVs are registered
+ * (e.g. num_inflows=num_outlet=1492). The hash stores only indices into mem_csv[]. */
+#define MEM_CSV_HASH_SIZE 65536              /* power of two, > MAX_MEM_CSV (20000) */
+#define MEM_CSV_HASH_MASK (MEM_CSV_HASH_SIZE - 1)
+static int mem_csv_hash[MEM_CSV_HASH_SIZE];  /* index into mem_csv[]; -1 = empty */
+static int mem_csv_hash_ready = 0;
+
+/* FNV-1a hash of a NUL-terminated string. */
+static unsigned int _mem_csv_hash(const char *s)
+{
+    unsigned int h = 2166136261u;
+    while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+    return h;
+}
+
+/* Clear the hash index (call whenever the registry is reset). */
+static void _mem_csv_hash_reset(void)
+{
+    memset(mem_csv_hash, 0xFF, sizeof(mem_csv_hash));  /* 0xFF bytes => -1 ints */
+    mem_csv_hash_ready = 1;
+}
+
+/* Insert mem_csv[idx] into the hash index, keyed on its registered name. */
+static void _mem_csv_hash_insert(int idx)
+{
+    unsigned int slot = _mem_csv_hash(mem_csv[idx].name) & MEM_CSV_HASH_MASK;
+    while (mem_csv_hash[slot] != -1) slot = (slot + 1) & MEM_CSV_HASH_MASK;
+    mem_csv_hash[slot] = idx;
+}
+
+/* Look up a registered name; return its mem_csv[] index, or -1 if not found. */
+static int _mem_csv_find(const char *name)
+{
+    unsigned int slot;
+    int idx;
+    if (!mem_csv_hash_ready) return -1;
+    slot = _mem_csv_hash(name) & MEM_CSV_HASH_MASK;
+    while ((idx = mem_csv_hash[slot]) != -1) {
+        if (strcmp(mem_csv[idx].name, name) == 0) return idx;
+        slot = (slot + 1) & MEM_CSV_HASH_MASK;
+    }
+    return -1;
+}
+
 static const AED_REAL missing = MISVAL;
 static const AED_REAL zero = 0.;
 // VS C compiler doesnt like the first for, but is OK with t'other
@@ -183,9 +229,11 @@ void register_memory_csv(const char *name, char *buffer, size_t size)
         fprintf(stderr, "Too many memory CSV files\n");
         return;
     }
+    if (!mem_csv_hash_ready) _mem_csv_hash_reset();
     mem_csv[n_mem_csv].name = name;
     mem_csv[n_mem_csv].buffer = buffer;
     mem_csv[n_mem_csv].size = size;
+    _mem_csv_hash_insert(n_mem_csv);
     n_mem_csv++;
 }
 
@@ -196,6 +244,7 @@ void clear_memory_csvs(void)
 {
     n_mem_csv = 0;
     _mem_csv_logged = 0;
+    _mem_csv_hash_reset();
 }
 
 /******************************************************************************
@@ -223,12 +272,16 @@ int open_csv_input(const char *fname, const char *timefmt)
         return -1;
     }
 
-    /* Check if a memory buffer exists for this filename (exact or basename match) */
-    for (i = 0; i < n_mem_csv; i++) {
+    /* Check if a memory buffer exists for this filename (exact or basename match).
+     * Uses the hash index (O(1)) instead of scanning the whole registry (O(n)). */
+    if (n_mem_csv > 0) {
         const char *base = strrchr(fname, '/');
+        int idx;
         base = base ? base + 1 : fname;
-        if (strcmp(fname, mem_csv[i].name) == 0 || strcmp(base, mem_csv[i].name) == 0) {
-            f = fmemopen(mem_csv[i].buffer, mem_csv[i].size, "r");
+        idx = _mem_csv_find(fname);             /* exact path match first */
+        if (idx < 0) idx = _mem_csv_find(base); /* then basename match */
+        if (idx >= 0) {
+            f = fmemopen(mem_csv[idx].buffer, mem_csv[idx].size, "r");
             if (f == NULL) {
                 return -1;
             }
@@ -236,7 +289,6 @@ int open_csv_input(const char *fname, const char *timefmt)
                 fprintf(stderr, "[aed_csv] Using memory buffers for inflow/outflow CSVs (not disk)\n");
                 _mem_csv_logged = 1;
             }
-            break;
         }
     }
 
