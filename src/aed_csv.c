@@ -118,6 +118,7 @@ static char *read_line(FILE *inf)
     if ( !strlen(ln) && feof(inf) ) {
         free(ln);
         ln = NULL;
+        _ln = NULL;      /* reset the static too, else next realloc() hits freed memory */
     }
 
     return ln;
@@ -299,6 +300,9 @@ int close_csv_input(int csvf)
  ******************************************************************************/
 void close_all_csv_inputs(void)
 {
+    int i;
+    for (i = 0; i < _n_inf; i++)
+        close_csv_input(i);
     _n_inf = 0;
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
