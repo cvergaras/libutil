@@ -222,19 +222,37 @@ static int check_it(int csv, int idx)
 
 /******************************************************************************
  * Register a CSV buffer for a specific filename (used by Python pglm).
+ * Returns the registry index of the new entry, or -1 if the registry is full.
+ * The index can be passed to update_memory_csv() to refresh the buffer/size
+ * in place on later steps without re-registering (avoids per-step churn).
  ******************************************************************************/
-void register_memory_csv(const char *name, char *buffer, size_t size)
+int register_memory_csv(const char *name, char *buffer, size_t size)
 {
     if (n_mem_csv >= MAX_MEM_CSV) {
         fprintf(stderr, "Too many memory CSV files\n");
-        return;
+        return -1;
     }
     if (!mem_csv_hash_ready) _mem_csv_hash_reset();
     mem_csv[n_mem_csv].name = name;
     mem_csv[n_mem_csv].buffer = buffer;
     mem_csv[n_mem_csv].size = size;
     _mem_csv_hash_insert(n_mem_csv);
-    n_mem_csv++;
+    return n_mem_csv++;
+}
+
+/******************************************************************************
+ * Update an already-registered entry's buffer pointer and size in place,
+ * by the index returned from register_memory_csv(). The name and hash slot
+ * are unchanged, so the coupler can reuse buffers across steps instead of
+ * clear_memory_csvs() + re-registering the whole set every step.
+ * Returns 0 on success, -1 if idx is out of range.
+ ******************************************************************************/
+int update_memory_csv(int idx, char *buffer, size_t size)
+{
+    if (idx < 0 || idx >= n_mem_csv) return -1;
+    mem_csv[idx].buffer = buffer;
+    mem_csv[idx].size = size;
+    return 0;
 }
 
 /******************************************************************************
@@ -285,6 +303,11 @@ int open_csv_input(const char *fname, const char *timefmt)
             if (f == NULL) {
                 return -1;
             }
+            /* macOS fmemopen streams are effectively unbuffered, so fgets does a
+             * read() callback per byte -> line reads were ~350x slower than a
+             * real file (the dominant cost of in-memory CSV mode). Force full
+             * buffering over the whole CSV to match fopen() speed. */
+            setvbuf(f, NULL, _IOFBF, mem_csv[idx].size > 0 ? mem_csv[idx].size : BUFSIZ);
             if (!_mem_csv_logged) {
                 fprintf(stderr, "[aed_csv] Using memory buffers for inflow/outflow CSVs (not disk)\n");
                 _mem_csv_logged = 1;

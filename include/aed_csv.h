@@ -96,7 +96,8 @@ typedef char FILNAME[80];
   int find_csv_var_(int *csv, const char *name, int *len);
 
   int open_csv_input(const char *fname, const char *timefmt);
-  void register_memory_csv(const char *name, char *buffer, size_t size);
+  int register_memory_csv(const char *name, char *buffer, size_t size);
+  int update_memory_csv(int idx, char *buffer, size_t size);
   void clear_memory_csvs(void);
   int count_lines(const char *fname);
   int find_csv_var(int csv, const char *name);
